@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Modal RAG Research Chatbot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" xintegrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .chat-container::-webkit-scrollbar { width: 8px; }
+        .chat-container::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 4px; }
+        .control-button {
+            background-color: #374151; color: #d1d5db; padding: 0.5rem 1rem;
+            border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500;
+            transition: background-color 0.2s; border: 1px solid #4b5563;
+        }
+        .control-button:hover { background-color: #4b5563; }
+        .clickable-image {
+            border: 2px solid #4b5563; transition: border-color 0.2s; cursor: pointer;
+        }
+        .clickable-image:hover { border-color: #818cf8; }
+        .tab-button {
+            flex: 1; padding: 0.5rem; text-align: center; cursor: pointer;
+            border-bottom: 2px solid #4b5563; color: #9ca3af;
+        }
+        .tab-button.active {
+            border-bottom-color: #6366f1;
+            color: #f9fafb;
+            font-weight: 600;
+        }
+        .input-container { position: relative; }
+        #mic-button.is-recording {
+            color: #f87171; /* red-400 */
+            background-color: #4b5563;
+        }
+        #visualizer-canvas {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1; pointer-events: none;
+            border-radius: 0.5rem; opacity: 0;
+            transition: opacity 0.2s;
+        }
+        #chat-input {
+            position: relative; z-index: 2;
+            background-color: transparent;
+        }
+        /* Styles for formatted bot messages */
+        .bot-message-content ul {
+            list-style-type: disc;
+            padding-left: 1.5rem;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .bot-message-content li {
+            margin-bottom: 0.25rem;
+        }
+        .bot-message-content p {
+            margin-bottom: 0.5rem;
+        }
+        .bot-message-content p:last-child {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 flex flex-col md:flex-row h-screen">
+
+    <!-- Sidebar -->
+    <aside class="w-full md:w-96 bg-gray-900 p-6 border-b md:border-b-0 md:border-r border-gray-700 flex-shrink-0 flex flex-col">
+        <div class="flex items-center mb-4">
+            <div class="p-2 bg-indigo-600 rounded-lg mr-4"><i class="fas fa-robot text-2xl text-white"></i></div>
+            <h1 class="text-xl font-bold text-white">Multi-Modal RAG Bot</h1>
+        </div>
+        
+        <div class="flex mb-4">
+            <button id="tab-keyword" class="tab-button active" onclick="showTab('keyword')">Keyword Search</button>
+            <button id="tab-url" class="tab-button" onclick="showTab('url')">Direct URL</button>
+        </div>
+
+        <div id="panel-keyword">
+            <div class="flex gap-2 mb-4">
+                <input type="text" id="keyword-input" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm" placeholder="e.g., self-attention models">
+                <button id="keyword-search-btn" class="control-button whitespace-nowrap">Search</button>
+            </div>
+            <div id="search-results" class="overflow-y-auto" style="max-height: 200px;"></div>
+        </div>
+
+        <div id="panel-url" class="hidden">
+             <div class="flex gap-2">
+                <input type="text" id="paper-url-input" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm" placeholder="https://arxiv.org/pdf/...">
+                <button id="url-process-btn" class="control-button whitespace-nowrap">Process</button>
+            </div>
+        </div>
+        
+        <hr class="border-gray-700 my-4">
+
+        <div class="flex-1 overflow-y-auto">
+            <h3 class="text-base font-semibold text-white mb-3">Processed Papers</h3>
+            <div id="processed-papers-list" class="space-y-4">
+                <p class="text-sm text-gray-500">No papers processed yet.</p>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main class="flex-1 flex flex-col h-full bg-gray-800">
+        <div id="chat-container" class="chat-container flex-1 p-6 overflow-y-auto">
+             <div class="flex items-start gap-4 mb-6">
+                <div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0"><i class="fas fa-robot text-xl"></i></div>
+                <div class="bg-gray-700 p-4 rounded-lg max-w-2xl">
+                    <p class="font-semibold text-white mb-1">Research Bot</p>
+                    <div class="text-gray-300 bot-message-content">I can now search the web or the documents you provide. Ask me anything! For example, try asking me to summarize something "in bullet points".</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-6 bg-gray-900 border-t border-gray-700">
+            <div class="flex items-center bg-gray-700 rounded-lg p-2 input-container">
+                <canvas id="visualizer-canvas"></canvas>
+                <textarea id="chat-input" class="flex-1 bg-transparent p-2 text-gray-200 placeholder-gray-400 focus:outline-none resize-none" rows="1" placeholder="Ask a question, or press and hold the mic to speak..."></textarea>
+                <button id="mic-button" class="mx-2 p-2 rounded-full text-gray-400 hover:bg-gray-600 hover:text-white transition-colors z-10"><i class="fas fa-microphone"></i></button>
+                <button id="send-button" class="bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg z-10"><i class="fas fa-paper-plane"></i></button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // --- Element Refs & State ---
+        const chatInput = document.getElementById('chat-input');
+        const sendButton = document.getElementById('send-button');
+        const chatContainer = document.getElementById('chat-container');
+        const keywordSearchBtn = document.getElementById('keyword-search-btn');
+        const keywordInput = document.getElementById('keyword-input');
+        const searchResultsDiv = document.getElementById('search-results');
+        const urlProcessBtn = document.getElementById('url-process-btn');
+        const paperUrlInput = document.getElementById('paper-url-input');
+        const processedPapersList = document.getElementById('processed-papers-list');
+        const micButton = document.getElementById('mic-button');
+        const visualizerCanvas = document.getElementById('visualizer-canvas');
+
+        let processedPapers = {};
+        const BACKEND_URL = 'http://127.0.0.1:5000';
+        
+        let recognition;
+        let isRecording = false;
+        let audioContext;
+        let analyser;
+        let visualizerFrameId;
+
+        // --- Event Listeners ---
+        keywordSearchBtn.addEventListener('click', handleKeywordSearch);
+        urlProcessBtn.addEventListener('click', () => handleProcessPaper(paperUrlInput.value, 'Direct URL Paper'));
+        sendButton.addEventListener('click', handleGlobalSendMessage);
+        chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleGlobalSendMessage(); } });
+        
+        micButton.addEventListener('mousedown', startRecording);
+        micButton.addEventListener('mouseup', stopRecording);
+        micButton.addEventListener('mouseleave', stopRecording);
+        micButton.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+        micButton.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+
+        // --- Handler Functions ---
+        function showTab(tabName) {
+            document.getElementById('panel-keyword').classList.toggle('hidden', tabName !== 'keyword');
+            document.getElementById('panel-url').classList.toggle('hidden', tabName !== 'url');
+            document.getElementById('tab-keyword').classList.toggle('active', tabName === 'keyword');
+            document.getElementById('tab-url').classList.toggle('active', tabName === 'url');
+        }
+
+        async function handleKeywordSearch() {
+            const query = keywordInput.value.trim();
+            if (!query) return;
+            searchResultsDiv.innerHTML = `<p class="text-sm text-gray-400">Searching...</p>`;
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/keyword-search`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({query})
+                });
+                const papers = await response.json();
+                if (!response.ok) throw new Error(papers.error || "Search failed");
+                displaySearchResults(papers);
+            } catch (error) {
+                searchResultsDiv.innerHTML = `<p class="text-sm text-red-400">Error: ${error.message}</p>`;
+            }
+        }
+
+        async function handleProcessPaper(url, title = 'Paper') {
+            if (!url) { displaySystemMessage("Please provide a valid PDF URL.", 'error'); return; }
+            if (processedPapers[url]) {
+                displaySystemMessage(`Paper "${title}" has already been processed.`, 'system');
+                return;
+            }
+            displaySystemMessage(`Processing: ${title}`);
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/process-paper`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, title })
+                });
+                const result = await response.json();
+                removeSystemMessages();
+                if (!response.ok) throw new Error(result.error || 'Failed to process paper.');
+                processedPapers[url] = { title, ...result };
+                updateProcessedPapersList();
+                displayBotMessage(`Successfully processed "${title}". It's now available for global search and analysis.`);
+            } catch (error) {
+                removeSystemMessages();
+                displaySystemMessage(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function handleGlobalSendMessage() {
+            const message = chatInput.value.trim();
+            if (!message) return;
+            displayUserMessage(message);
+            chatInput.value = '';
+            showTypingIndicator("Deciding how to answer...");
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/global-search`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: message })
+                });
+                removeTypingIndicator();
+                if (!response.ok) { const err = await response.json(); throw new Error(err.error || "Unknown error."); }
+                const result = await response.json();
+                displayBotMessage(result.answer);
+            } catch(error) {
+                removeTypingIndicator();
+                displaySystemMessage(error.message, 'error');
+            }
+        }
+        
+        async function handleDescribeImage(url, imageIndex) {
+            showTypingIndicator("Analyzing image...");
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/describe-image`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url, image_index: imageIndex })
+                });
+                removeTypingIndicator();
+                if (!response.ok) { const err = await response.json(); throw new Error(err.error || "Failed to analyze."); }
+                const result = await response.json();
+                displayBotMessage(result.description);
+            } catch (error) {
+                removeTypingIndicator();
+                displaySystemMessage(error.message, 'error');
+            }
+        }
+
+        async function startRecording() {
+            if (isRecording) return;
+            
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                displaySystemMessage("Speech recognition is not supported by your browser.", 'error');
+                return;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                isRecording = true;
+                micButton.classList.add('is-recording');
+                visualizerCanvas.style.opacity = '1';
+
+                recognition = new SpeechRecognition();
+                recognition.continuous = true;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+
+                recognition.onresult = (event) => {
+                    let interim_transcript = '';
+                    let final_transcript = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            final_transcript += event.results[i][0].transcript;
+                        } else {
+                            interim_transcript += event.results[i][0].transcript;
+                        }
+                    }
+                    chatInput.value = final_transcript + interim_transcript;
+                };
+                
+                recognition.onerror = (event) => {
+                    console.error("Speech recognition error", event.error);
+                };
+
+                recognition.onend = () => {
+                    if (isRecording) { 
+                       stopRecording();
+                    }
+                    // Automatically send message when speech ends
+                    if(chatInput.value.trim()){
+                        handleGlobalSendMessage();
+                    }
+                };
+
+                recognition.start();
+
+                // Start Visualizer
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                drawVisualizer();
+
+            } catch (error) {
+                displaySystemMessage("Microphone access denied. Please check permissions.", 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            isRecording = false;
+            micButton.classList.remove('is-recording');
+            visualizerCanvas.style.opacity = '0';
+            
+            if (recognition) {
+                recognition.stop();
+            }
+            
+            cancelAnimationFrame(visualizerFrameId);
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+            }
+        }
+
+        function drawVisualizer() {
+            const canvasCtx = visualizerCanvas.getContext('2d');
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            const draw = () => {
+                if (!isRecording) {
+                    canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+                    return;
+                }
+                visualizerFrameId = requestAnimationFrame(draw);
+                analyser.getByteFrequencyData(dataArray);
+                canvasCtx.fillStyle = '#1f2937';
+                canvasCtx.fillRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+
+                const barWidth = (visualizerCanvas.width / bufferLength) * 1.5;
+                let barHeight;
+                let x = 0;
+
+                for (let i = 0; i < bufferLength; i++) {
+                    barHeight = dataArray[i] / 2.5;
+                    canvasCtx.fillStyle = `rgba(129, 140, 248, ${barHeight / 100})`;
+                    canvasCtx.fillRect(x, visualizerCanvas.height - barHeight, barWidth, barHeight);
+                    x += barWidth + 1;
+                }
+            };
+            draw();
+        }
+        
+        // --- UI Update & Display Functions ---
+        function displaySearchResults(papers) {
+            searchResultsDiv.innerHTML = '';
+            if (papers.length === 0) {
+                searchResultsDiv.innerHTML = `<p class="text-sm text-gray-400">No papers with available PDFs found.</p>`;
+                return;
+            }
+            papers.forEach(paper => {
+                const paperDiv = document.createElement('div');
+                paperDiv.className = 'p-3 bg-gray-800 rounded-lg mb-2';
+                paperDiv.innerHTML = `<p class="font-semibold text-sm truncate" title="${paper.title}">${paper.title}</p><p class="text-xs text-gray-400 truncate">${(paper.authors || []).join(', ')} (${paper.year})</p><button class="control-button w-full mt-2 text-xs">Process this Paper</button>`;
+                paperDiv.querySelector('button').addEventListener('click', () => handleProcessPaper(paper.pdfUrl, paper.title));
+                searchResultsDiv.appendChild(paperDiv);
+            });
+        }
+
+        function updateProcessedPapersList() {
+            processedPapersList.innerHTML = '';
+            if (Object.keys(processedPapers).length === 0) {
+                processedPapersList.innerHTML = `<p class="text-sm text-gray-500">No papers processed yet.</p>`;
+                return;
+            }
+            for (const url in processedPapers) {
+                const paper = processedPapers[url];
+                const paperDiv = document.createElement('div');
+                paperDiv.className = 'p-3 bg-gray-800 rounded-lg';
+                
+                const titleP = document.createElement('p');
+                titleP.className = 'font-semibold text-sm truncate';
+                titleP.title = paper.title;
+                titleP.textContent = paper.title;
+                paperDiv.appendChild(titleP);
+
+                if (paper.images_found && paper.images_found.length > 0) {
+                    const imageHeader = document.createElement('h5');
+                    imageHeader.className = 'text-xs font-semibold text-gray-400 mt-2 mb-1';
+                    imageHeader.textContent = 'Image Analysis';
+                    paperDiv.appendChild(imageHeader);
+
+                    const imageContainer = document.createElement('div');
+                    paper.images_found.forEach(img => {
+                        const imageUrl = `${BACKEND_URL}/api/get-image?url=${encodeURIComponent(url)}&image_index=${img.index}`;
+                        const imgDiv = document.createElement('div');
+                        imgDiv.className = 'mb-2';
+
+                        const imgElement = document.createElement('img');
+                        imgElement.src = imageUrl;
+                        imgElement.className = 'w-full rounded-lg clickable-image';
+                        imgElement.alt = `Extracted image ${img.index + 1} from page ${img.page}`;
+                        imgElement.addEventListener('click', () => handleDescribeImage(url, img.index));
+                        
+                        const pElement = document.createElement('p');
+                        pElement.className = 'text-xs text-center text-gray-500 mt-1';
+                        pElement.textContent = `Image from Page ${img.page}`;
+
+                        imgDiv.append(imgElement, pElement);
+                        imageContainer.appendChild(imgDiv);
+                    });
+                    paperDiv.appendChild(imageContainer);
+                }
+                
+                processedPapersList.appendChild(paperDiv);
+            }
+        }
+
+        function displayUserMessage(message) {
+            const elem = document.createElement('div');
+            elem.className = 'flex justify-end items-start gap-4 mb-6';
+            elem.innerHTML = `<div class="bg-indigo-500 p-4 rounded-lg max-w-2xl"><p class="font-semibold text-white">You</p><p>${message}</p></div>`;
+            chatContainer.append(elem);
+            scrollToBottom();
+        }
+        
+        function formatResponseText(text) {
+            let safeText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            safeText = safeText.replace(/(^|[^\*])\*(?!\*)([^\*]+)\*(?!\*)/g, '$1<em>$2</em>');
+            const lines = safeText.split('\n');
+            let html = '';
+            let inList = false;
+            for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (trimmedLine.startsWith('* ') || trimmedLine.startsWith('- ')) {
+                    if (!inList) {
+                        html += '<ul>';
+                        inList = true;
+                    }
+                    html += `<li>${trimmedLine.substring(2)}</li>`;
+                } else {
+                    if (inList) {
+                        html += '</ul>';
+                        inList = false;
+                    }
+                    if (trimmedLine) {
+                       html += `<p>${line}</p>`;
+                    }
+                }
+            }
+            if (inList) {
+                html += '</ul>';
+            }
+            return html || `<p>${safeText}</p>`;
+        }
+
+        function displayBotMessage(text) {
+             const elem = document.createElement('div');
+            elem.className = 'flex items-start gap-4 mb-6';
+            elem.innerHTML = `
+                <div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-robot text-xl"></i>
+                </div>
+                <div class="bg-gray-700 p-4 rounded-lg max-w-2xl">
+                    <p class="font-semibold text-white mb-1">Research Bot</p>
+                    <div class="text-gray-300 bot-message-content">${formatResponseText(text)}</div>
+                </div>`;
+            chatContainer.appendChild(elem);
+            scrollToBottom();
+        }
+
+        function displaySystemMessage(message, type='system') {
+            const elem = document.createElement('div');
+            elem.id = 'system-message';
+            const color = type === 'error' ? 'red' : 'blue';
+            elem.innerHTML = `<p class="text-center text-${color}-400 text-sm py-2 font-medium">${message}</p>`;
+            chatContainer.append(elem);
+            scrollToBottom();
+        }
+        function showTypingIndicator(text) {
+             const elem = document.createElement('div');
+             elem.id = 'typing-indicator';
+             elem.className = 'flex items-start gap-4 mb-6';
+             elem.innerHTML = `<div class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0"><i class="fas fa-robot text-xl fa-spin"></i></div><div class="p-2"><p class="text-gray-400">${text || "Thinking..."}</p></div>`;
+             chatContainer.append(elem);
+             scrollToBottom();
+        }
+        function removeTypingIndicator() {
+            document.getElementById('typing-indicator')?.remove();
+        }
+        function removeSystemMessages() {
+            document.querySelectorAll('#system-message').forEach(el => el.remove());
+        }
+        function scrollToBottom() {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+    </script>
+</body>
+</html>
