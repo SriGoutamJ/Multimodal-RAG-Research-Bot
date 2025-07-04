@@ -1,6 +1,7 @@
 # app.py
-# This version fixes the keyword search functionality by making the search more robust.
-# All library requirements remain the same.
+# This is the complete, consolidated backend file containing all features.
+# Ensure all dependencies are installed:
+# pip install Flask Flask-Cors requests PyMuPDF sentence-transformers torch faiss-cpu numpy google-generativeai python-dotenv Pillow "camelot-py[cv]" pandas transformers gTTS matplotlib
 
 import os
 import json
@@ -44,11 +45,13 @@ except Exception as e:
 print("Loading ML models...")
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 transcriber = pipeline("automatic-speech-recognition", model="distil-whisper/distil-small.en")
-print("Models loaded.")
+print("All models loaded successfully.")
 
 paper_storage = {}
 
+
 # --- Core Helper Functions ---
+
 def process_and_store_paper(pdf_url, title):
     global paper_storage
     if pdf_url in paper_storage: return True
@@ -58,6 +61,7 @@ def process_and_store_paper(pdf_url, title):
         response.raise_for_status()
         pdf_bytes = response.content
         doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
+        
         full_text = "".join(page.get_text() for page in doc)
         extracted_images = [{"page_num": p_num + 1, "bytes": doc.extract_image(img[0])["image"], "ext": doc.extract_image(img[0])["ext"]} for p_num, page in enumerate(doc) for img in page.get_images(full=True)]
         
@@ -72,25 +76,21 @@ def process_and_store_paper(pdf_url, title):
         embeddings = embedding_model.encode(text_chunks)
         index = faiss.IndexFlatL2(embeddings.shape[1])
         index.add(np.array(embeddings, dtype=np.float32))
+        
         paper_storage[pdf_url] = {"title": title, "chunks": text_chunks, "index": index, "images": extracted_images, "tables": extracted_tables}
-        return True
+        print(f"Successfully processed and stored '{title}'.")
+        return text_chunks
     except Exception as e:
         print(f"Error processing {pdf_url}: {e}")
         if 'temp_pdf_path' in locals() and os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
-        return False
+        return None
 
 def search_semantic_scholar_by_keyword(query, limit=5):
-    """Searches Semantic Scholar for papers based on a keyword, with robust PDF finding."""
     try:
         url = 'https://api.semanticscholar.org/graph/v1/paper/search'
-        # Fetch more results than needed, then filter locally for robustness
-        params = { 
-            'query': query, 
-            'limit': limit * 3, 
-            'fields': 'title,authors,year,openAccessPdf,externalIds' 
-        }
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        params = { 'query': query, 'limit': limit, 'fields': 'title,authors,year,openAccessPdf,externalIds', 'openAccessPdf': 'true' }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
         results = response.json()
@@ -102,13 +102,8 @@ def search_semantic_scholar_by_keyword(query, limit=5):
                     pdf_url = paper['openAccessPdf']['url']
                 elif paper.get('externalIds', {}).get('ArXiv'):
                     pdf_url = f"https://arxiv.org/pdf/{paper['externalIds']['ArXiv']}.pdf"
-                
                 if pdf_url:
                     found_papers.append({'title': paper.get('title'), 'authors': [author['name'] for author in paper.get('authors', [])], 'year': paper.get('year'), 'pdfUrl': pdf_url})
-                
-                # Stop once we have found enough papers with PDFs
-                if len(found_papers) >= limit:
-                    break
         return found_papers
     except requests.exceptions.RequestException as e:
         print(f"Error searching Semantic Scholar: {e}")
@@ -202,22 +197,43 @@ def visualize_table_data(table_data):
 def format_papers_as_citations(papers):
     return "\n".join([f"- {(p.get('authors')[0] + ' et al.') if p.get('authors') else 'N/A'} ({p.get('year', 'N/A')}). *{p.get('title', 'No Title')}*" for p in papers])
 
+def generate_suggested_questions(initial_chunks):
+    if not llm: return []
+    context = " ".join(initial_chunks[:2])
+    prompt = f"Based on the following abstract and introduction from a research paper, please generate 3 insightful follow-up questions that a researcher might ask.\nPresent them as a simple JSON list of strings. Example: [\"What was the main finding?\", \"How was the model evaluated?\"]\n\nCONTEXT:\n---\n{context}\n---\n\nQUESTIONS (JSON list of 3 strings):"
+    try:
+        response = llm.generate_content(prompt)
+        cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(cleaned_response)
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"Error generating suggested questions: {e}")
+        return ["What is the main contribution of this paper?", "What were the key results?", "What methodology was used?"]
+
 
 # --- API Routes ---
 @app.route('/')
 def serve_frontend():
     return send_from_directory('.', 'index.html')
 
+@app.route('/api/clear-session', methods=['POST'])
+def clear_session_endpoint():
+    global paper_storage
+    paper_storage = {}
+    print("Session cleared.")
+    return jsonify({"message": "Session cleared successfully."})
+
 @app.route('/api/process-paper', methods=['POST'])
 def process_paper_endpoint():
     data = request.get_json()
     paper_url, title = data.get('url'), data.get('title', 'Untitled')
     if not paper_url: return jsonify({'error': 'URL is required'}), 400
-    if not process_and_store_paper(paper_url, title): return jsonify({'error': 'Failed to process paper'}), 500
+    initial_chunks = process_and_store_paper(paper_url, title)
+    if initial_chunks is None: return jsonify({'error': 'Failed to process paper'}), 500
     paper_data = paper_storage.get(paper_url, {})
     image_info = [{"page": img["page_num"], "index": i} for i, img in enumerate(paper_data.get("images", []))]
     table_info = [{"page": tbl["page_num"], "index": tbl["table_index"]} for tbl in paper_data.get("tables", [])]
-    return jsonify({'image_count': len(image_info), 'images_found': image_info, 'table_count': len(table_info), 'tables_found': table_info})
+    suggested_questions = generate_suggested_questions(initial_chunks)
+    return jsonify({'image_count': len(image_info), 'images_found': image_info, 'table_count': len(table_info), 'tables_found': table_info, 'suggested_questions': suggested_questions})
 
 @app.route('/api/keyword-search', methods=['POST'])
 def keyword_search_endpoint():
@@ -247,7 +263,7 @@ def global_search_endpoint():
     if search_strategy == "WEB_SEARCH":
         search_results = web_search_tool(query)
         answer = generate_answer_from_context(query, search_results, "WEB")
-        return jsonify({'answer': f"(From Web Search) {answer}"})
+        return jsonify({'answer': f"(From Web Search) {answer}", 'context': search_results})
     else: # DOCUMENT_SEARCH
         if not paper_storage: return jsonify({'answer': "There are no papers processed yet."})
         query_embedding = embedding_model.encode([query])
@@ -260,7 +276,7 @@ def global_search_endpoint():
         if not all_relevant_chunks: return jsonify({'answer': "I couldn't find relevant information in the processed papers."})
         all_relevant_chunks.sort(key=lambda x: x['distance'])
         answer = generate_answer_from_context(query, all_relevant_chunks[:4], "DOCUMENTS")
-        return jsonify({'answer': answer})
+        return jsonify({'answer': answer, 'context': [item['chunk'] for item in all_relevant_chunks[:4]]})
 
 @app.route('/api/get-image', methods=['GET'])
 def get_image_endpoint():
@@ -312,6 +328,7 @@ def transcribe_audio_endpoint():
     if 'audio' not in request.files: return jsonify({'error': 'No audio file found'}), 400
     audio_file = request.files['audio']
     try:
+        # This endpoint is not used by the latest frontend, but is kept for completeness
         result = transcriber(audio_file.read())
         return jsonify({'transcription': result["text"]})
     except Exception as e:
