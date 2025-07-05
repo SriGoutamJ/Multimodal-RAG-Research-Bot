@@ -203,7 +203,7 @@
                 updateProcessedPapersList();
                 displayBotMessage(`Successfully processed "${title}". It's now available for global search and analysis.`);
                 if (result.suggested_questions) {
-                    displaySuggestedQuestions(result.suggested_questions);
+                    displaySuggestedQuestions(result.suggested_questions, false);
                 }
             } catch (error) {
                 removeSystemMessages();
@@ -225,12 +225,32 @@
                 if (!response.ok) { const err = await response.json(); throw new Error(err.error || "Unknown error."); }
                 const result = await response.json();
                 displayBotMessage(result.answer, result.context);
+                if (result.context && result.context.length > 0) {
+                    fetchAndDisplayFollowUps(result.context);
+                }
             } catch(error) {
                 removeTypingIndicator();
                 displaySystemMessage(error.message, 'error');
             }
         }
         
+        async function fetchAndDisplayFollowUps(context) {
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/follow-up-questions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ context: context })
+                });
+                if (!response.ok) return;
+                const result = await response.json();
+                if (result.suggested_questions && result.suggested_questions.length > 0) {
+                    displaySuggestedQuestions(result.suggested_questions, true);
+                }
+            } catch (error) {
+                console.error("Could not fetch follow-up questions:", error);
+            }
+        }
+
         async function handleDescribeImage(url, imageIndex) {
             showTypingIndicator("Analyzing image...");
             try {
@@ -547,9 +567,17 @@
             scrollToBottom();
         }
         
-        function displaySuggestedQuestions(questions) {
+        function displaySuggestedQuestions(questions, isFollowUp = false) {
             const suggestionsContainer = document.createElement('div');
             suggestionsContainer.className = 'flex flex-wrap gap-2 justify-center my-4';
+            
+            if (isFollowUp) {
+                const title = document.createElement('p');
+                title.className = 'w-full text-center text-sm text-gray-400 mb-1';
+                title.textContent = 'Suggested follow-ups:';
+                suggestionsContainer.appendChild(title);
+            }
+
             questions.forEach(q => {
                 const button = document.createElement('button');
                 button.className = 'suggestion-button';
@@ -621,4 +649,4 @@
         });
     </script>
 </body>
-</ht
+</html>
