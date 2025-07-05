@@ -54,7 +54,7 @@ paper_storage = {}
 
 def process_and_store_paper(pdf_url, title):
     global paper_storage
-    if pdf_url in paper_storage: return True
+    if pdf_url in paper_storage: return paper_storage[pdf_url].get("chunks", [])
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         response = requests.get(pdf_url, headers=headers, timeout=60)
@@ -209,6 +209,31 @@ def generate_suggested_questions(initial_chunks):
         print(f"Error generating suggested questions: {e}")
         return ["What is the main contribution of this paper?", "What were the key results?", "What methodology was used?"]
 
+def generate_follow_up_questions(context_chunks):
+    """Uses the LLM to generate follow-up questions based on the last context."""
+    if not llm: return []
+    context = "\n".join(context_chunks)
+    prompt = f"""
+Based on the following text snippets that were just used to answer a user's question, please generate 3 insightful follow-up questions that probe deeper into the topic.
+The questions should be distinct from each other and encourage further exploration.
+Present them as a simple JSON list of strings. Example: ["Can you elaborate on the methodology?", "How does this compare to previous work?", "What are the limitations of this approach?"]
+
+CONTEXT:
+---
+{context}
+---
+
+FOLLOW-UP QUESTIONS (JSON list of 3 strings):
+"""
+    try:
+        response = llm.generate_content(prompt)
+        cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+        questions = json.loads(cleaned_response)
+        return questions
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"Error generating follow-up questions: {e}")
+        return []
+
 
 # --- API Routes ---
 @app.route('/')
@@ -278,6 +303,17 @@ def global_search_endpoint():
         answer = generate_answer_from_context(query, all_relevant_chunks[:4], "DOCUMENTS")
         return jsonify({'answer': answer, 'context': [item['chunk'] for item in all_relevant_chunks[:4]]})
 
+@app.route('/api/follow-up-questions', methods=['POST'])
+def follow_up_questions_endpoint():
+    """New endpoint to generate follow-up questions from context."""
+    data = request.get_json()
+    context = data.get('context')
+    if not context or not isinstance(context, list):
+        return jsonify({'error': 'Valid context (a list of strings) is required'}), 400
+    
+    questions = generate_follow_up_questions(context)
+    return jsonify({'suggested_questions': questions})
+
 @app.route('/api/get-image', methods=['GET'])
 def get_image_endpoint():
     paper_url, image_index = request.args.get('url'), int(request.args.get('image_index', 0))
@@ -328,7 +364,6 @@ def transcribe_audio_endpoint():
     if 'audio' not in request.files: return jsonify({'error': 'No audio file found'}), 400
     audio_file = request.files['audio']
     try:
-        # This endpoint is not used by the latest frontend, but is kept for completeness
         result = transcriber(audio_file.read())
         return jsonify({'transcription': result["text"]})
     except Exception as e:
